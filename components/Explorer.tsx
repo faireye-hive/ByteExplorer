@@ -578,7 +578,7 @@ const Explorer: React.FC = () => {
                 let postTags: string[] = [];
                 try {
                   const meta = JSON.parse(post.json_metadata || '{}');
-                  postTags = meta.tags || [];
+                  postTags = Array.isArray(meta.tags) ? meta.tags.filter((t: any) => typeof t === 'string') : [];
                 } catch (e) {}
                 
                 const allOurTags = new Set(TOPICS.flatMap(t => t.sub));

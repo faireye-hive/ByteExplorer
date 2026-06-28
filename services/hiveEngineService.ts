@@ -21,16 +21,24 @@ const HIVE_RPC_NODES = [
 ];
 
 const apiCache = new Map<string, { data: any, timestamp: number }>();
-const CACHE_TTL = 1000 * 60 * 3; // 3 minutes local cache
+// In-flight request deduplication — prevents parallel identical calls
+const inFlight = new Map<string, Promise<any>>();
+
+const CACHE_TTL_DEFAULT  = 1000 * 60 * 3;  // 3 min  — posts, balances
+const CACHE_TTL_TRIBE    = 1000 * 60 * 10; // 10 min — tribe info (rarely changes)
+const CACHE_TTL_METRICS  = 1000 * 60 * 2;  // 2 min  — market prices
+const CACHE_TTL_HISTORY  = 1000 * 60 * 5;  // 5 min  — account history
 
 // --- Hive Engine Contract Calls ---
 
-const rpcCall = async <T,>(contract: string, table: string, query: Record<string, any>, limit: number = 1000, offset: number = 0, sort: Record<string, number> = {}): Promise<T[]> => {
+const rpcCall = async <T,>(contract: string, table: string, query: Record<string, any>, limit: number = 1000, offset: number = 0, sort: Record<string, number> = {}, ttl = CACHE_TTL_DEFAULT): Promise<T[]> => {
   const cacheKey = `rpc_${contract}_${table}_${JSON.stringify(query)}_${limit}_${offset}_${JSON.stringify(sort)}`;
   const cached = apiCache.get(cacheKey);
-  if (cached && Date.now() - cached.timestamp < CACHE_TTL) {
+  if (cached && Date.now() - cached.timestamp < ttl) {
     return cached.data as T[];
   }
+  // Deduplicate in-flight requests
+  if (inFlight.has(cacheKey)) return inFlight.get(cacheKey)!;
 
   const body = {
     jsonrpc: "2.0",
@@ -51,41 +59,46 @@ const rpcCall = async <T,>(contract: string, table: string, query: Record<string
     body.params.sort = sort; 
   }
 
-  for (const node of HIVE_ENGINE_RPC_NODES) {
-    try {
-      const controller = new AbortController();
-      const timeoutId = setTimeout(() => controller.abort(), 6000);
-      
-      const response = await fetch(node, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(body),
-        signal: controller.signal
-      });
-      clearTimeout(timeoutId);
-
-      if (!response.ok) {
-        throw new Error(`HTTP error! status: ${response.status}`);
-      }
-
-      const text = await response.text();
+  const fetchPromise = (async () => {
+    for (const node of HIVE_ENGINE_RPC_NODES) {
       try {
-        const data = JSON.parse(text);
-        if (data.error) throw new Error(`RPC Error: ${JSON.stringify(data.error)}`);
-        const result = data.result || [];
-        apiCache.set(cacheKey, { data: result, timestamp: Date.now() });
-        return result;
-      } catch (parseError) {
-        throw new Error(`Invalid JSON response`);
+        const controller = new AbortController();
+        const timeoutId = setTimeout(() => controller.abort(), 6000);
+
+        const response = await fetch(node, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(body),
+          signal: controller.signal
+        });
+        clearTimeout(timeoutId);
+
+        if (!response.ok) throw new Error(`HTTP error! status: ${response.status}`);
+
+        const text = await response.text();
+        try {
+          const data = JSON.parse(text);
+          if (data.error) throw new Error(`RPC Error: ${JSON.stringify(data.error)}`);
+          const result = data.result || [];
+          apiCache.set(cacheKey, { data: result, timestamp: Date.now() });
+          return result;
+        } catch {
+          throw new Error(`Invalid JSON response`);
+        }
+      } catch (error) {
+        console.warn(`Hive Engine API Error on ${node}:`, error);
       }
-    } catch (error) {
-      console.warn(`Hive Engine API Error on ${node}:`, error);
-      // Try next node
     }
+    console.error('All Hive Engine RPC nodes failed.');
+    return [];
+  })();
+
+  inFlight.set(cacheKey, fetchPromise);
+  try {
+    return await fetchPromise;
+  } finally {
+    inFlight.delete(cacheKey);
   }
-  
-  console.error("All Hive Engine RPC nodes failed.");
-  return [];
 };
 
 export const getCentTokenInfo = async (symbol: string = 'BYTE'): Promise<Token | null> => {
@@ -94,12 +107,13 @@ export const getCentTokenInfo = async (symbol: string = 'BYTE'): Promise<Token |
 };
 
 export const getCentMetrics = async (symbol: string = 'BYTE'): Promise<MarketMetrics | null> => {
-  const metrics = await rpcCall<MarketMetrics>('market', 'metrics', { symbol }, 1);
+  // Market metrics change frequently — use shorter TTL
+  const metrics = await rpcCall<MarketMetrics>('market', 'metrics', { symbol }, 1, 0, {}, CACHE_TTL_METRICS);
   return metrics.length > 0 ? metrics[0] : null;
 };
 
 export const getCentRichList = async (symbol: string = 'BYTE'): Promise<Balance[]> => {
-  return await rpcCall<Balance>('tokens', 'balances', { symbol }, 50, 0, { balance: -1 });
+  return await rpcCall<Balance>('tokens', 'balances', { symbol }, 50, 0, { balance: -1 }, CACHE_TTL_DEFAULT);
 };
 
 export const getOrderBook = async (symbol: string = 'BYTE'): Promise<{ buy: Order[], sell: Order[] }> => {
@@ -122,58 +136,83 @@ export const getUserBalance = async (username: string, symbol: string = 'BYTE'):
 };
 
 export const getAccountHistory = async (username: string, symbol: string = 'BYTE', limit: number = 30, offset: number = 0): Promise<any[]> => {
+  const cacheKey = `history_${username}_${symbol}_${limit}_${offset}`;
+  const cached = apiCache.get(cacheKey);
+  if (cached && Date.now() - cached.timestamp < CACHE_TTL_HISTORY) {
+    return cached.data;
+  }
   try {
-    const response = await fetch(`https://history.hive-engine.com/accountHistory?account=${username}&symbol=${symbol}&limit=${limit}&offset=${offset}`);
+    const controller = new AbortController();
+    const timeoutId = setTimeout(() => controller.abort(), 8000);
+    const response = await fetch(
+      `https://history.hive-engine.com/accountHistory?account=${username}&symbol=${symbol}&limit=${limit}&offset=${offset}`,
+      { signal: controller.signal }
+    );
+    clearTimeout(timeoutId);
     if (response.ok) {
-      return await response.json();
+      const data = await response.json();
+      apiCache.set(cacheKey, { data, timestamp: Date.now() });
+      return data;
     }
     return [];
   } catch (error) {
-    console.error("Error fetching account history:", error);
+    console.error('Error fetching account history:', error);
     return [];
   }
 };
 
 // --- Hive Blockchain / Scotbot Calls ---
 
-export const scotFetch = async (endpoint: string): Promise<any> => {
+export const scotFetch = async (endpoint: string, ttl = CACHE_TTL_DEFAULT): Promise<any> => {
   const cacheKey = `scot_${endpoint}`;
   const cached = apiCache.get(cacheKey);
-  if (cached && Date.now() - cached.timestamp < CACHE_TTL) {
+  if (cached && Date.now() - cached.timestamp < ttl) {
     return cached.data;
   }
+  // Deduplicate in-flight requests
+  if (inFlight.has(cacheKey)) return inFlight.get(cacheKey)!;
 
-  for (const node of SCOT_API_NODES) {
-    try {
-      const controller = new AbortController();
-      const timeoutId = setTimeout(() => controller.abort(), 5000);
-      
-      const response = await fetch(`${node}${endpoint}`, { signal: controller.signal });
-      clearTimeout(timeoutId);
-      
-      if (!response.ok) throw new Error(`Scot HTTP error: ${response.status}`);
-      
-      const text = await response.text();
+  const fetchPromise = (async () => {
+    for (const node of SCOT_API_NODES) {
       try {
-        const data = JSON.parse(text);
-        apiCache.set(cacheKey, { data, timestamp: Date.now() });
-        return data;
-      } catch (parseError) {
-        throw new Error(`Invalid JSON response: ${text.substring(0, 50)}`);
+        const controller = new AbortController();
+        const timeoutId = setTimeout(() => controller.abort(), 5000);
+
+        const response = await fetch(`${node}${endpoint}`, { signal: controller.signal });
+        clearTimeout(timeoutId);
+
+        if (!response.ok) throw new Error(`Scot HTTP error: ${response.status}`);
+
+        const text = await response.text();
+        try {
+          const data = JSON.parse(text);
+          apiCache.set(cacheKey, { data, timestamp: Date.now() });
+          return data;
+        } catch {
+          throw new Error(`Invalid JSON response: ${text.substring(0, 50)}`);
+        }
+      } catch (err) {
+        console.warn(`ScotAPI Error on ${node}:`, err);
       }
-    } catch (err) {
-      console.warn(`ScotAPI Error on ${node}:`, err);
     }
+    console.warn('All SCOT API nodes failed');
+    return null;
+  })();
+
+  inFlight.set(cacheKey, fetchPromise);
+  try {
+    return await fetchPromise;
+  } finally {
+    inFlight.delete(cacheKey);
   }
-  console.warn("All SCOT API nodes failed");
-  return null;
 };
 
 export const getTribeInfo = async (token: string = 'BYTE'): Promise<TribeInfo | null> => {
   try {
+    // Tribe info changes slowly — use longer TTL (10 min)
     const [infoData, configData] = await Promise.all([
-      scotFetch(`/info?token=${token}`).catch(() => null),
-      scotFetch(`/config?token=${token}`).catch(() => null)
+      scotFetch(`/info?token=${token}`, CACHE_TTL_TRIBE).catch(() => null),
+      scotFetch(`/config?token=${token}`, CACHE_TTL_TRIBE).catch(() => null)
     ]);
 
     const info = Array.isArray(infoData) && infoData.length > 0 ? infoData[0] : (infoData || {});
@@ -312,12 +351,13 @@ export const getScotPost = async (author: string, permlink: string, token: strin
   }
 };
 
-const hiveFetch = async (method: string, params: any): Promise<any> => {
+const hiveFetch = async (method: string, params: any, ttl = CACHE_TTL_DEFAULT): Promise<any> => {
   const cacheKey = `hive_${method}_${JSON.stringify(params)}`;
   const cached = apiCache.get(cacheKey);
-  if (cached && Date.now() - cached.timestamp < CACHE_TTL) {
+  if (cached && Date.now() - cached.timestamp < ttl) {
     return cached.data;
   }
+  if (inFlight.has(cacheKey)) return inFlight.get(cacheKey)!;
 
   const body = {
     jsonrpc: "2.0",
@@ -326,30 +366,39 @@ const hiveFetch = async (method: string, params: any): Promise<any> => {
     id: 1,
   };
 
-  for (const node of HIVE_RPC_NODES) {
-    try {
-      const controller = new AbortController();
-      const timeoutId = setTimeout(() => controller.abort(), 6000);
-      
-      const response = await fetch(node, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(body),
-        signal: controller.signal
-      });
-      clearTimeout(timeoutId);
+  const fetchPromise = (async () => {
+    for (const node of HIVE_RPC_NODES) {
+      try {
+        const controller = new AbortController();
+        const timeoutId = setTimeout(() => controller.abort(), 6000);
 
-      if (!response.ok) throw new Error(`Hive HTTP error: ${response.status}`);
-      
-      const data = await response.json();
-      if (data.error) throw new Error(`RPC Error: ${JSON.stringify(data.error)}`);
-      apiCache.set(cacheKey, { data: data.result, timestamp: Date.now() });
-      return data.result;
-    } catch (err) {
-      console.warn(`Hive RPC Error on ${node}:`, err);
+        const response = await fetch(node, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(body),
+          signal: controller.signal
+        });
+        clearTimeout(timeoutId);
+
+        if (!response.ok) throw new Error(`Hive HTTP error: ${response.status}`);
+
+        const data = await response.json();
+        if (data.error) throw new Error(`RPC Error: ${JSON.stringify(data.error)}`);
+        apiCache.set(cacheKey, { data: data.result, timestamp: Date.now() });
+        return data.result;
+      } catch (err) {
+        console.warn(`Hive RPC Error on ${node}:`, err);
+      }
     }
+    throw new Error('All Hive RPC nodes failed');
+  })();
+
+  inFlight.set(cacheKey, fetchPromise);
+  try {
+    return await fetchPromise;
+  } finally {
+    inFlight.delete(cacheKey);
   }
-  throw new Error("All Hive RPC nodes failed");
 };
 
 export const getPendingCuration = async (username: string, token: string = 'BYTE'): Promise<number> => {

@@ -1,6 +1,6 @@
 import React, { useEffect, useState } from 'react';
 import { getCentMetrics, getCentTokenInfo, getOrderBook, getCentRichList } from '../services/hiveEngineService';
-import { analyzeTokenData } from '../services/geminiService';
+import { analyzeTokenData, isGeminiAvailable } from '../services/geminiService';
 import { Token, MarketMetrics, Order, Balance } from '../types';
 import { sanitizeUrl } from '../utils/security';
 import { useCommunity } from '../contexts/CommunityContext';
@@ -120,23 +120,37 @@ const Dashboard: React.FC = () => {
           <h2 className="text-xl font-bold text-indigo-300 flex items-center gap-2 mb-4">
             <BrainCircuit /> Análise de Mercado IA
           </h2>
-          {aiAnalysis ? (
-            <div className="prose max-w-none text-slate-300 prose-headings:text-white prose-p:text-slate-300 prose-a:text-cent hover:prose-a:text-white prose-strong:text-white text-sm leading-relaxed whitespace-pre-line bg-black/20 p-4 rounded-xl border border-white/5">
-              {aiAnalysis}
+          {!isGeminiAvailable() ? (
+            <div className="flex items-start gap-3 bg-slate-800/60 border border-slate-700 rounded-xl p-4">
+              <BrainCircuit size={20} className="text-slate-500 shrink-0 mt-0.5" />
+              <div>
+                <p className="text-slate-300 text-sm font-medium">Análise por IA não configurada</p>
+                <p className="text-slate-500 text-xs mt-1">
+                  Para habilitar esta feature, adicione a variável <code className="bg-slate-700 px-1 rounded text-indigo-300">GEMINI_API_KEY</code> no ambiente.
+                </p>
+              </div>
             </div>
           ) : (
-            <div className="text-slate-400 text-sm">
-              Solicite uma análise instantânea baseada nos dados atuais do mercado usando a IA Gemini.
-            </div>
+            <>
+              {aiAnalysis ? (
+                <div className="prose max-w-none text-slate-300 prose-headings:text-white prose-p:text-slate-300 prose-a:text-cent hover:prose-a:text-white prose-strong:text-white text-sm leading-relaxed whitespace-pre-line bg-black/20 p-4 rounded-xl border border-white/5">
+                  {aiAnalysis}
+                </div>
+              ) : (
+                <div className="text-slate-400 text-sm">
+                  Solicite uma análise instantânea baseada nos dados atuais do mercado usando a IA Gemini.
+                </div>
+              )}
+              <button 
+                onClick={handleAiAnalysis} 
+                disabled={analyzing}
+                className="mt-4 px-6 py-2 bg-indigo-600 hover:bg-indigo-500 text-white rounded-lg font-medium transition-all disabled:opacity-50 flex items-center gap-2 shadow-lg shadow-indigo-500/20"
+              >
+                {analyzing ? <RefreshCw className="animate-spin" size={16}/> : <BrainCircuit size={16}/>}
+                {analyzing ? "Analisando..." : "Gerar Insights com IA"}
+              </button>
+            </>
           )}
-          <button 
-            onClick={handleAiAnalysis} 
-            disabled={analyzing}
-            className="mt-4 px-6 py-2 bg-indigo-600 hover:bg-indigo-500 text-white rounded-lg font-medium transition-all disabled:opacity-50 flex items-center gap-2 shadow-lg shadow-indigo-500/20"
-          >
-            {analyzing ? <RefreshCw className="animate-spin" size={16}/> : <BrainCircuit size={16}/>}
-            {analyzing ? "Analisando..." : "Gerar Insights com IA"}
-          </button>
         </div>
       </div>
 

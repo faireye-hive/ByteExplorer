@@ -4,7 +4,7 @@ import { getPostContent, getTribeInfo, getScotPost, getPostReplies } from '../se
 import { HivePost, TribeInfo } from '../types';
 import { ArrowLeft, Calendar, Heart, MessageCircle, Share2, ThumbsDown, Loader2, Coins, Bug, X, User, Copy, Check, Settings } from 'lucide-react';
 import { marked } from 'marked';
-import DOMPurify from 'dompurify';
+import { sanitizePostHtml } from '../utils/security';
 import { useAuth } from '../contexts/AuthContext';
 import { useCommunity } from '../contexts/CommunityContext';
 import { useHiddenUsers } from '../utils/hiddenUsers';
@@ -34,10 +34,7 @@ const CommentItem: React.FC<{ comment: HivePost, tribeInfo: TribeInfo | null, re
            return `![${alt}](https://images.hive.blog/0x0/${url})`;
         });
         const rawHtml = await marked.parse(bodyToParse);
-        const cleanHtml = DOMPurify.sanitize(rawHtml, {
-           ADD_TAGS: ['iframe'],
-           ADD_ATTR: ['allow', 'allowfullscreen', 'frameborder', 'scrolling', 'target']
-        });
+        const cleanHtml = sanitizePostHtml(rawHtml);
         setHtml(cleanHtml);
       } catch (e) {
         setHtml('<p>Erro ao carregar comentário.</p>');
@@ -374,30 +371,20 @@ const SinglePost: React.FC = () => {
         let bodyToParse = hiveData.body || '';
         // Convert bare image links to markdown images
         bodyToParse = bodyToParse.replace(/(?:^|\s)(https?:\/\/[^\s<"']+\.(?:png|jpe?g|gif|webp))/gi, ' ![]($1)');
-        
-        // Proxy images to avoid IP tracking
+
+        // Proxy images through images.hive.blog to avoid tracking
         bodyToParse = bodyToParse.replace(/!\[(.*?)\]\((https?:\/\/[^\s)]+)\)/g, (match, alt, url) => {
            if (url.includes('images.hive.blog')) return match;
            return `![${alt}](https://images.hive.blog/0x0/${url})`;
         });
 
         const rawHtml = await marked.parse(bodyToParse);
-        
-        DOMPurify.addHook('afterSanitizeAttributes', function (node) {
-          if ('target' in node) {
-            node.setAttribute('target', '_blank');
-            node.setAttribute('rel', 'noopener noreferrer');
-          }
-        });
-
-        const cleanHtml = DOMPurify.sanitize(rawHtml, {
-           ADD_TAGS: ['iframe'],
-           ADD_ATTR: ['allow', 'allowfullscreen', 'frameborder', 'scrolling', 'target']
-        });
+        // sanitizePostHtml enforces iframe src whitelist + blocks event handlers
+        const cleanHtml = sanitizePostHtml(rawHtml);
         setHtmlContent(cleanHtml);
       } catch (e) {
-        console.error("Markdown parse error", e);
-        setHtmlContent("<p>Erro ao carregar conteúdo.</p>");
+        console.error('Markdown parse error', e);
+        setHtmlContent('<p>Erro ao carregar conteúdo.</p>');
       }
     }
   };

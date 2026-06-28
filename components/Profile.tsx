@@ -54,10 +54,13 @@ const Profile: React.FC = () => {
     const fetchProfileData = async () => {
       setLoading(true);
       try {
+        // Only calculate pending curation for own profile — it fetches 400 posts which is expensive
+        const isOwnProfile = user && currentProfile === user;
+
         const [balData, userScotData, curationData, tInfo] = await Promise.all([
           getUserBalance(currentProfile, community),
           scotFetch(`/@${currentProfile}?token=${community}`),
-          getPendingCuration(currentProfile, community),
+          isOwnProfile ? getPendingCuration(currentProfile, community) : Promise.resolve(0),
           getTribeInfo(community)
         ]);
         

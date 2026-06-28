@@ -1,10 +1,21 @@
-import { GoogleGenAI } from "@google/genai";
 import { MarketMetrics, Token } from '../types';
 
-const ai = new GoogleGenAI({ apiKey: process.env.API_KEY });
+// Verifica se a API key está disponível em tempo de execução
+const GEMINI_API_KEY: string | undefined =
+  (typeof process !== 'undefined' && process.env?.API_KEY) || undefined;
+
+export const isGeminiAvailable = (): boolean => !!GEMINI_API_KEY;
 
 export const analyzeTokenData = async (token: Token, metrics: MarketMetrics): Promise<string> => {
+  if (!GEMINI_API_KEY) {
+    return '';
+  }
+
   try {
+    // Import dinâmico para não bloquear o bundle quando a key não existe
+    const { GoogleGenAI } = await import('@google/genai');
+    const ai = new GoogleGenAI({ apiKey: GEMINI_API_KEY });
+
     const prompt = `
       Você é um analista financeiro de criptomoedas experiente na blockchain Hive.
       Analise os seguintes dados do token ${token.symbol} (${token.name}):
@@ -21,13 +32,13 @@ export const analyzeTokenData = async (token: Token, metrics: MarketMetrics): Pr
     `;
 
     const response = await ai.models.generateContent({
-      model: 'gemini-3-flash-preview',
+      model: 'gemini-2.0-flash',
       contents: prompt,
     });
 
-    return response.text || "Não foi possível gerar a análise no momento.";
+    return response.text || 'Não foi possível gerar a análise no momento.';
   } catch (error) {
-    console.error("Gemini Analysis Error:", error);
-    return "Erro ao conectar com o analista IA. Verifique sua chave API.";
+    console.error('Gemini Analysis Error:', error);
+    return 'Erro ao conectar com o analista IA. Verifique sua chave API.';
   }
 };
