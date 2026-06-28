@@ -1,0 +1,6 @@
+{
+  "name": "BYTE Token Explorer",
+  "description": "Um painel avançado para monitoramento e análise do token BYTE voltado para programadores da Hive-Engine.",
+  "requestFramePermissions": [],
+  "majorCapabilities": []
+}
