@@ -1,17 +1,21 @@
+# Workflow para compilar e implantar no GitHub Pages automaticamente
 name: Deploy to GitHub Pages
 
 on:
   push:
     branches:
-      - main # 👈 Altere para "master" se o seu repositório usar a branch antiga
+      - main
+      - master  # Cobre caso sua branch principal seja main ou master
 
+# Define as permissões necessárias para o token do GitHub Actions implantar no Pages
 permissions:
   contents: read
   pages: write
   id-token: write
 
+# Permite apenas uma implantação ativa por vez
 concurrency:
-  group: "pages"
+  group: 'pages'
   cancel-in-progress: true
 
 jobs:
@@ -21,33 +25,29 @@ jobs:
       url: ${{ steps.deployment.outputs.page_url }}
     runs-on: ubuntu-latest
     steps:
-      - name: Checkout
+      - name: Checkout Código
         uses: actions/checkout@v4
 
-      - name: Set up Node
+      - name: Instalar Node.js
         uses: actions/setup-node@v4
         with:
           node-version: 20
-          cache: npm
+          cache: 'npm'
 
-      - name: Install dependencies
-        run: npm ci
+      - name: Instalar Dependências
+        run: npm ci || npm install
 
-      - name: Build
+      - name: Compilar Projeto (Build)
         run: npm run build
 
-      # Hack para SPA no GitHub Pages (Copia index.html para 404.html para não dar erro de rota no F5)
-      - name: Copy index to 404 for routing
-        run: cp dist/index.html dist/404.html
-
-      - name: Setup Pages
+      - name: Configurar Páginas do GitHub
         uses: actions/configure-pages@v4
 
-      - name: Upload artifact
+      - name: Enviar Artefatos (dist)
         uses: actions/upload-pages-artifact@v3
         with:
           path: './dist'
 
-      - name: Deploy to GitHub Pages
+      - name: Implantar no GitHub Pages
         id: deployment
         uses: actions/deploy-pages@v4
