@@ -207,6 +207,16 @@ export const scotFetch = async (endpoint: string, ttl = CACHE_TTL_DEFAULT): Prom
   }
 };
 
+export const getTrendingTags = async (token: string = 'BYTE', limit: number = 40): Promise<any[]> => {
+  try {
+    const data = await scotFetch(`/get_trending_tags?limit=${limit}&token=${token}`, CACHE_TTL_TRIBE);
+    return Array.isArray(data) ? data : [];
+  } catch (error) {
+    console.error('Error fetching trending tags:', error);
+    return [];
+  }
+};
+
 export const getTribeInfo = async (token: string = 'BYTE'): Promise<TribeInfo | null> => {
   try {
     // Tribe info changes slowly — use longer TTL (10 min)
